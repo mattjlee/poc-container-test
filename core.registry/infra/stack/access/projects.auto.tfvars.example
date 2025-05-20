@@ -1,0 +1,26 @@
+# Example: Copy this file to projects.auto.tfvars and fill in your real values
+common_base = {
+  tenant_id                   = "__REPLACE_ME__"
+  subscription_id             = "__REPLACE_ME__"
+  azuredevops_org_service_url = "https://dev.azure.com/YOUR_ORG"
+  acr_name                    = "companyacr"
+  acr_resource_group_name     = "company-acr-rg"
+  azuredevops_pat_token       = "__REPLACE_ME__"
+}
+
+projects = {
+  sampleapp = {
+    project_name               = "sampleapp"
+    company_dev_group_name     = "devs-all"
+    dev_group_name             = "devs-all"
+    ado_service_principal_name = "spn-sampleapp"
+    environments               = ["dev", "prod"]
+  }
+  anotherapp = {
+    project_name               = "anotherapp"
+    company_dev_group_name     = "devs-all"
+    dev_group_name             = "devs-all"
+    ado_service_principal_name = "spn-anotherapp"
+    environments               = ["dev", "test", "prod"]
+  }
+}

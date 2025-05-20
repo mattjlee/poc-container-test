@@ -1,36 +1,27 @@
 // Stack entrypoint for ACR access control (RBAC)
 
-# Example: Assign roles to users, groups, or service principals for ACR access
-# resource "azurerm_role_assignment" "example" {
-#   scope                = <acr_id>
-#   role_definition_name = "AcrPull"
-#   principal_id         = <object_id>
-# }
+locals {
+  project_keys = keys(var.projects)
+}
 
-module "example_project" {
+module "projects" {
+  for_each = var.projects
   source = "../../../modules/project"
 
-  project_name = "sampleapp"
+  # Project-specific settings
+  project_name               = each.value.project_name
+  company_dev_group_name     = each.value.company_dev_group_name
+  dev_group_name             = each.value.dev_group_name
+  ado_service_principal_name = each.value.ado_service_principal_name
+  environments               = each.value.environments
+  azuredevops_project_name     = each.value.azuredevops_project_name 
 
-  # Company-wide dev group for open ACR access
-  company_dev_group_name = "devs-all"
-  dev_group_name         = "devs-all"
-
-  # Federated credential (ADO pipeline)
-  ado_service_principal_name = "spn-sampleapp"
-
-  # ACR lookup (abstracted from user, but pipeline injects these)
-  acr_name                  = var.acr_name
-  acr_resource_group_name   = var.acr_resource_group_name
-
-  # Required attributes
-  tenant_id                     = var.tenant_id
-  azuredevops_org_service_url   = var.azuredevops_org_service_url
-  subscription_id               = var.subscription_id
-  azuredevops_pat_token         = var.azuredevops_pat_token
-
-  environments = [
-    "dev",
-    "prod"
-  ]
+  # Common settings from base object
+  tenant_id                   = var.common_base.tenant_id
+  subscription_id             = var.common_base.subscription_id
+  azuredevops_org_service_url = var.common_base.azuredevops_org_service_url
+  acr_name                    = var.common_base.acr_name
+  acr_resource_group_name     = var.common_base.acr_resource_group_name
+  azuredevops_pat_token       = var.common_base.azuredevops_pat_token
+  
 }

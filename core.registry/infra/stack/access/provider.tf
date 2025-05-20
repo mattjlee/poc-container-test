@@ -18,15 +18,15 @@ terraform {
 
 provider "azurerm" {
   features {}
-  tenant_id       = var.tenant_id
-  subscription_id = var.subscription_id
+  tenant_id       = var.common_base.tenant_id
+  subscription_id = var.common_base.subscription_id
 }
 
 provider "azuread" {
-  tenant_id = var.tenant_id
+  tenant_id = var.common_base.tenant_id
 }
 
 provider "azuredevops" {
-  org_service_url = var.azuredevops_org_service_url
-  personal_access_token = var.azuredevops_pat_token
+  org_service_url      = var.common_base.azuredevops_org_service_url
+  personal_access_token = var.common_base.azuredevops_pat_token
 }
