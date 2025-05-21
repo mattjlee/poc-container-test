@@ -9,6 +9,9 @@ locals {
   user_assigned_identity_name_template = "id-__PROJECT_NAME__-__ENV__"
   azuredevops_env_name_template      = "__PROJECT_NAME__-__ENV__"
   service_endpoint_name_template     = "__PROJECT_NAME__-federated-__ENV__"
+  build_service_endpoint_name        = "__PROJECT_NAME__-federated-build"
+  build_user_assigned_identity_name  = "id-__PROJECT_NAME__-build"
+  build_federated_cred_name          = "__PROJECT_NAME__-ado-federated-build"
 }
 
 # Example usage for AzureAD group (one per environment)
@@ -18,16 +21,7 @@ resource "azuread_group" "devs" {
   security_enabled = true
 }
 
-resource "azuread_application" "ado_app" {
-  for_each     = toset(var.environments)
-  display_name = replace(replace(local.ado_app_name_template, "__PROJECT_NAME__", lower(var.project_name)), "__ENV__", each.key)
-}
-
-resource "azuread_service_principal" "ado_sp" {
-  for_each = toset(var.environments)
-  client_id = azuread_application.ado_app[each.key].client_id
-}
-
+# Managed identity for each environment
 resource "azurerm_user_assigned_identity" "env" {
   for_each            = toset(var.environments)
   name                = replace(replace(local.user_assigned_identity_name_template, "__PROJECT_NAME__", lower(var.project_name)), "__ENV__", each.key)
@@ -35,30 +29,61 @@ resource "azurerm_user_assigned_identity" "env" {
   location            = data.azurerm_container_registry.acr.location
 }
 
-
-
-# Static test federated identity credential for 'dev' environment only
-resource "azurerm_federated_identity_credential" "ado_federated_dev" {
-  name                = replace(replace(local.federated_cred_name_template, "__PROJECT_NAME__", lower(var.project_name)), "__ENV__", "dev")
+# Managed identity for build (common to all projects)
+resource "azurerm_user_assigned_identity" "build" {
+  name                = replace(local.build_user_assigned_identity_name, "__PROJECT_NAME__", lower(var.project_name))
   resource_group_name = var.acr_resource_group_name
-  audience            = ["api://AzureADTokenExchange"]
-  issuer              = azuredevops_serviceendpoint_azurerm.federated["dev"].workload_identity_federation_issuer
-  subject             = azuredevops_serviceendpoint_azurerm.federated["dev"].workload_identity_federation_subject
-  parent_id           = azurerm_user_assigned_identity.env["dev"].id
+  location            = data.azurerm_container_registry.acr.location
 }
 
-# Commented out dynamic version for testing
-# resource "azurerm_federated_identity_credential" "ado_federated" {
+# # Service connection for each environment (pull only)
+# resource "azuredevops_serviceendpoint_azurerm" "federated_env" {
+#   for_each                = toset(var.environments)
+#   project_id              = data.azuredevops_project.project.id
+#   service_endpoint_name   = replace(replace(local.service_endpoint_name_template, "__PROJECT_NAME__", lower(var.project_name)), "__ENV__", each.key)
+#   description             = "Federated identity service connection for ${var.project_name} (${each.key})"
+#   azurerm_spn_tenantid    = var.tenant_id
+#   azurerm_subscription_id = var.subscription_id
+#   azurerm_subscription_name = data.azurerm_subscription.selected.display_name
+#   credentials {
+#     serviceprincipalid = azurerm_user_assigned_identity.env[each.key].client_id
+#   }
+# }
+
+# Service connection for build (push, pull, sign)
+resource "azuredevops_serviceendpoint_azurerm" "federated_build" {
+  project_id              = data.azuredevops_project.project.id
+  service_endpoint_name   = replace(local.build_service_endpoint_name, "__PROJECT_NAME__", lower(var.project_name))
+  description             = "Federated identity service connection for ${var.project_name} (build)"
+  azurerm_spn_tenantid    = var.tenant_id
+  azurerm_subscription_id = var.subscription_id
+  azurerm_subscription_name = data.azurerm_subscription.selected.display_name
+  credentials {
+    serviceprincipalid = azurerm_user_assigned_identity.build.client_id
+  }
+}
+
+# # Federated identity credential for each environment
+# resource "azurerm_federated_identity_credential" "ado_federated_env" {
 #   for_each            = toset(var.environments)
 #   name                = replace(replace(local.federated_cred_name_template, "__PROJECT_NAME__", lower(var.project_name)), "__ENV__", each.key)
 #   resource_group_name = var.acr_resource_group_name
 #   audience            = ["api://AzureADTokenExchange"]
-#   issuer              = azuredevops_serviceendpoint_azurerm.federated[each.key].workload_identity_federation_issuer
-#   subject             = azuredevops_serviceendpoint_azurerm.federated[each.key].workload_identity_federation_subject
+#   issuer              = azuredevops_serviceendpoint_azurerm.federated_env[each.key].workload_identity_federation_issuer
+#   subject             = azuredevops_serviceendpoint_azurerm.federated_env[each.key].workload_identity_federation_subject
 #   parent_id           = azurerm_user_assigned_identity.env[each.key].id
+
 # }
 
-
+# Federated identity credential for build
+resource "azurerm_federated_identity_credential" "ado_federated_build" {
+  name                = replace(local.build_federated_cred_name, "__PROJECT_NAME__", lower(var.project_name))
+  resource_group_name = var.acr_resource_group_name
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = azuredevops_serviceendpoint_azurerm.federated_build.workload_identity_federation_issuer
+  subject             = azuredevops_serviceendpoint_azurerm.federated_build.workload_identity_federation_subject
+  parent_id           = azurerm_user_assigned_identity.build.id
+}
 
 data "azurerm_container_registry" "acr" {
   name                = var.acr_name
@@ -66,47 +91,29 @@ data "azurerm_container_registry" "acr" {
 }
 
 # ACR RBAC assignments
-# Only dev environment gets push, pull, and sign
-resource "azurerm_role_assignment" "dev_pull" {
-  count                = length(var.environments) > 0 ? 1 : 0
-  scope                = data.azurerm_container_registry.acr.id
+# Environments: pull only
+resource "azurerm_role_assignment" "env_pull" {
+  for_each            = toset(var.environments)
+  scope               = data.azurerm_container_registry.acr.id
   role_definition_name = "AcrPull"
-  principal_id         = azuread_service_principal.ado_sp[var.environments[0]].object_id
+  principal_id        = azurerm_user_assigned_identity.env[each.key].principal_id
 }
 
-resource "azurerm_role_assignment" "dev_push" {
-  count                = length(var.environments) > 0 ? 1 : 0
+# Build: pull, push, sign
+resource "azurerm_role_assignment" "build_pull" {
+  scope                = data.azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.build.principal_id
+}
+resource "azurerm_role_assignment" "build_push" {
   scope                = data.azurerm_container_registry.acr.id
   role_definition_name = "AcrPush"
-  principal_id         = azuread_service_principal.ado_sp[var.environments[0]].object_id
+  principal_id         = azurerm_user_assigned_identity.build.principal_id
 }
-
-resource "azurerm_role_assignment" "dev_sign" {
-  count                = length(var.environments) > 0 ? 1 : 0
+resource "azurerm_role_assignment" "build_sign" {
   scope                = data.azurerm_container_registry.acr.id
   role_definition_name = "AcrImageSigner"
-  principal_id         = azuread_service_principal.ado_sp[var.environments[0]].object_id
-}
-
-# Non-prod and prod environments get pull only
-resource "azurerm_role_assignment" "nondev_pull" {
-  for_each = { for env in var.environments : env => env if env != var.environments[0] }
-  scope                = data.azurerm_container_registry.acr.id
-  role_definition_name = "AcrPull"
-  principal_id         = azuread_service_principal.ado_sp[each.key].object_id
-}
-
-# Create a single developer group for ACR access (tracked by Terraform)
-resource "azuread_group" "acr_developers" {
-  display_name     = replace(local.acr_developers_group_name_template, "__PROJECT_NAME__", lower(var.project_name))
-  security_enabled = true
-}
-
-# Assign AcrPull role to the tracked developer group
-resource "azurerm_role_assignment" "acr_developers_pull" {
-  scope                = data.azurerm_container_registry.acr.id
-  role_definition_name = "AcrPull"
-  principal_id         = azuread_group.acr_developers.object_id
+  principal_id         = azurerm_user_assigned_identity.build.principal_id
 }
 
 # Remove project_name dependency from ADO project data source
@@ -134,16 +141,4 @@ data "azurerm_subscription" "selected" {
   subscription_id = var.subscription_id
 }
 
-# Service connection for each environment, using the user-assigned identity
-resource "azuredevops_serviceendpoint_azurerm" "federated" {
-  for_each                = toset(var.environments)
-  project_id              = data.azuredevops_project.project.id
-  service_endpoint_name   = replace(replace(local.service_endpoint_name_template, "__PROJECT_NAME__", lower(var.project_name)), "__ENV__", each.key)
-  description             = "Federated identity service connection for ${var.project_name} (${each.key})"
-  azurerm_spn_tenantid    = var.tenant_id
-  azurerm_subscription_id = var.subscription_id
-  azurerm_subscription_name = data.azurerm_subscription.selected.display_name
-  credentials {
-    serviceprincipalid = azurerm_user_assigned_identity.env[each.key].client_id
-  }
-}
+
